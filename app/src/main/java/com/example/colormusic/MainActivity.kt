@@ -1,6 +1,7 @@
 package com.example.colormusic
 
 import android.Manifest
+import android.os.Build
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -64,6 +65,14 @@ fun Screen(store: SettingsStore) {
     val s by ColorMusicService.liveSettings.collectAsState()
     var pendingStart by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf("") }
+    val ble = remember { BluetoothDiagnostics(ctx) }
+    val bleDevices by ble.devices.collectAsState()
+    val bleCharacteristics by ble.characteristics.collectAsState()
+    val bleMessage by ble.message.collectAsState()
+    val blePermissions = if (Build.VERSION.SDK_INT >= 31) arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT) else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+    val blePermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        if (result.values.all { it }) ble.scan() else ble.message.value = "Разрешите доступ Bluetooth для поиска лампы"
+    }
 
     fun update(new: AppSettings) {
         ColorMusicService.liveSettings.value = new
@@ -124,6 +133,8 @@ fun Screen(store: SettingsStore) {
         }
     }
 
+    androidx.compose.runtime.DisposableEffect(ble) { onDispose { ble.close() } }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -154,7 +165,36 @@ fun Screen(store: SettingsStore) {
             }
         }
 
-        SectionCard("Лампочка (Home Assistant + Tuya)") {
+        SectionCard("Лампочка BY Smart A60 · Bluetooth LE") {
+            Text("Поиск и диагностика локального Bluetooth-соединения. Пока изучаем протокол устройства; неподтверждённые команды не отправляются.", style = MaterialTheme.typography.bodySmall)
+            Text(bleMessage, style = MaterialTheme.typography.bodyMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    val granted = blePermissions.all { ContextCompat.checkSelfPermission(ctx, it) == PackageManager.PERMISSION_GRANTED }
+                    if (granted) ble.scan() else blePermissionLauncher.launch(blePermissions)
+                }) { Text("Найти лампу") }
+                OutlinedButton(onClick = { ble.stopScan(); ble.message.value = "Поиск остановлен" }) { Text("Стоп поиска") }
+            }
+            if (bleDevices.isEmpty()) Text("Устройства появятся после поиска", style = MaterialTheme.typography.bodySmall)
+            bleDevices.forEach { device ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(device.name, style = MaterialTheme.typography.titleSmall)
+                        Text("${device.address} · RSSI ${device.rssi} dBm", style = MaterialTheme.typography.bodySmall)
+                        OutlinedButton(onClick = { ble.inspect(device.address) }) { Text("Подключить и прочитать службы") }
+                    }
+                }
+            }
+            if (bleCharacteristics.isNotEmpty()) {
+                Text("Обнаруженные GATT-характеристики", style = MaterialTheme.typography.titleSmall)
+                bleCharacteristics.forEach { c ->
+                    Text("Служба: ${c.service}\nХарактеристика: ${c.characteristic}\nСвойства: ${c.properties.ifBlank { "не указаны" }}", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            OutlinedButton(onClick = { ble.close(); ble.message.value = "Соединение закрыто" }) { Text("Отключить") }
+        }
+
+        SectionCard("Старая интеграция Home Assistant (резерв)") {
             Field("Адрес Home Assistant", s.haUrl) { update(s.copy(haUrl = it)) }
             Field("Долгосрочный токен HA", s.haToken, secret = true) { update(s.copy(haToken = it)) }
             Field("entity_id лампочки", s.entityId) { update(s.copy(entityId = it)) }
